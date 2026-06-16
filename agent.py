@@ -18,7 +18,53 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parser ──────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract description, size, and max_price from a natural language query
+    using regex. Size and max_price default to None if not found.
+
+    Examples:
+        "vintage graphic tee under $30, size M"
+            → description="vintage graphic tee", size="M", max_price=30.0
+        "looking for a flannel shirt"
+            → description="looking for a flannel shirt", size=None, max_price=None
+    """
+    price_match = re.search(
+        r'(?:under|below|max|less than)\s*\$?([\d]+(?:\.\d+)?)',
+        query, re.IGNORECASE
+    )
+    max_price = float(price_match.group(1)) if price_match else None
+
+    size_match = re.search(r'\bsize\s+(\w+)', query, re.IGNORECASE)
+    size = size_match.group(1) if size_match else None
+
+    _size_map = {
+        "xsmall": "XS", "extra small": "XS",
+        "small": "S",
+        "medium": "M",
+        "large": "L",
+        "xlarge": "XL", "extra large": "XL",
+        "xxlarge": "XXL", "2xl": "XXL",
+    }
+    if size:
+        size = _size_map.get(size.lower(), size)
+
+    description = query
+    description = re.sub(
+        r'(?:under|below|max|less than)\s*\$?[\d]+(?:\.\d+)?', '', description, flags=re.IGNORECASE
+    )
+    description = re.sub(r'\bsize\s+\w+', '', description, flags=re.IGNORECASE)
+    description = re.sub(r'[,.\-]+', ' ', description)
+    description = re.sub(r'\s+', ' ', description).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +138,58 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse query → description, size, max_price
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+
+    if not parsed["description"]:
+        session["error"] = "Please describe what you're looking for (e.g. 'vintage graphic tee under $30, size M')."
+        return session
+
+    # Step 3: search listings — returns [] when nothing matches
+    results = search_listings(
+        description=parsed["description"],
+        size=parsed["size"],
+        max_price=parsed["max_price"],
+    )
+    if not results:
+        filters = []
+        if parsed["size"]:
+            filters.append(f"size {parsed['size']}")
+        if parsed["max_price"] is not None:
+            filters.append(f"max price ${parsed['max_price']:.2f}")
+        filter_note = f" with {', '.join(filters)}" if filters else ""
+        session["error"] = (
+            f"No listings found for \"{parsed['description']}\"{filter_note}. "
+            "Try broader terms, an alternative name (e.g. \"tee\" instead of \"graphic tee\"), "
+            "or relax your size or price filters."
+        )
+        return session
+    session["search_results"] = results
+
+    # Step 4: select top result
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest outfit — exit early if wardrobe is empty
+    if not wardrobe.get("items"):
+        session["error"] = (
+            "Your wardrobe is empty. Add some clothing items before requesting outfit suggestions."
+        )
+        return session
+
+    session["outfit_suggestion"] = suggest_outfit(session["selected_item"], wardrobe)
+
+    # Step 6: create fit card — guard against a missing outfit before calling
+    if not session["outfit_suggestion"] or not session["outfit_suggestion"].strip():
+        session["error"] = (
+            f"Could not generate a fit card — outfit description is empty. "
+            f"Try describing what you'd pair with {session['selected_item']['title']}."
+        )
+        return session
+    session["fit_card"] = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+
     return session
 
 

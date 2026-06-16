@@ -69,8 +69,35 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+
+    # Filter by price and size
+    filtered = []
+    for listing in listings:
+        if max_price is not None and listing["price"] > max_price:
+            continue
+        if size is not None and size.lower() not in listing["size"].lower():
+            continue
+        filtered.append(listing)
+
+    # Score by keyword overlap against description
+    keywords = set(description.lower().split())
+    scored = []
+    for listing in filtered:
+        searchable = " ".join([
+            listing["title"],
+            listing["description"],
+            listing["category"],
+            " ".join(listing["style_tags"]),
+            " ".join(listing["colors"]),
+            listing["brand"] or "",
+        ]).lower()
+        score = sum(1 for kw in keywords if kw in searchable)
+        if score > 0:
+            scored.append((score, listing))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [listing for _, listing in scored]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +127,34 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    client = _get_groq_client()
+    items = wardrobe.get("items", [])
+
+    if not items:
+        prompt = (
+            f"A user just found a thrifted item: \"{new_item['title']}\" "
+            f"({new_item['category']}, {', '.join(new_item['colors'])}, {new_item['condition']} condition). "
+            "Their wardrobe is empty. Give them 2–3 sentences of general styling advice — "
+            "what types of pieces pair well with this item and what overall vibe it suits."
+        )
+    else:
+        wardrobe_lines = "\n".join(
+            f"- {item['name']} ({item.get('category', '')}): {item.get('description', '')}"
+            for item in items
+        )
+        prompt = (
+            f"A user has this thrifted item: \"{new_item['title']}\" "
+            f"({new_item['category']}, {', '.join(new_item['colors'])}, {new_item['condition']} condition).\n\n"
+            f"Their wardrobe includes:\n{wardrobe_lines}\n\n"
+            "Suggest 1–2 specific outfit combinations using the new item and named pieces from their wardrobe. "
+            "Keep it to 2–3 sentences, casual and specific."
+        )
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +186,26 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        return (
+            f"Could not generate a fit card — the outfit description is empty. "
+            f"Please provide a complete outfit using your \"{new_item.get('title', 'new item')}\" "
+            "as the centerpiece (e.g. describe what bottoms, shoes, and layers you'd pair it with)."
+        )
+
+    client = _get_groq_client()
+    prompt = (
+        f"Write a casual, authentic Instagram/TikTok OOTD caption (2–4 sentences) for this outfit:\n\n"
+        f"New thrifted item: {new_item['title']} — ${new_item['price']:.2f} on {new_item['platform']}\n"
+        f"Outfit: {outfit}\n\n"
+        "Rules: mention the item name, price, and platform naturally (once each); "
+        "capture the outfit vibe in specific terms; sound like a real person, not a product listing. "
+        "End with 3–5 relevant hashtags."
+    )
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.9,
+    )
+    return response.choices[0].message.content
